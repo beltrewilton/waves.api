@@ -147,7 +147,7 @@ def tmp_func_audio_already_synth(pathfile):
     return  pathfile, audio.duration_seconds, audio.frame_rate, audio.channels
 
 
-def synth_req(part: str, text: str, alpha: float, beta: float):
+def synth_req(part: str, text: str, alpha: float = 0.3, beta: float = 0.2) -> dict:
     data = {
         "part": part,
         "text": text,
