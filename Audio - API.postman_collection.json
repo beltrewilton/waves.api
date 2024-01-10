@@ -1,0 +1,154 @@
+{
+	"info": {
+		"_postman_id": "bfd2ea1c-bb8f-4e4c-a897-a1599003be4a",
+		"name": "Audio - API",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "11088065"
+	},
+	"item": [
+		{
+			"name": "New Request",
+			"request": {
+				"method": "GET",
+				"header": []
+			},
+			"response": []
+		},
+		{
+			"name": "https://127.0.0.1:8000/users/memo",
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Authorization",
+						"value": "bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJtZW1vIiwic2NvcGVzIjpbIm1lbWJlciIsIm1lbWJlciJdLCJpc19hY3RpdmUiOjEsImV4cCI6MTcwMzY0MDExMH0.wOKCUS5mDuEhvDQPwuuELJ4jZtClXdFiTcG5LeQ7pDg",
+						"type": "text"
+					}
+				],
+				"url": {
+					"raw": "https://127.0.0.1:8000/users/memo",
+					"protocol": "https",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"users",
+						"memo"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "https://127.0.0.1:8000/users/",
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Authorization",
+						"value": "bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJtZW1vIiwic2NvcGVzIjpbIm1lbWJlciIsIm1lbWJlciJdLCJpc19hY3RpdmUiOjEsImV4cCI6MTcwMzY0MDExMH0.wOKCUS5mDuEhvDQPwuuELJ4jZtClXdFiTcG5LeQ7pDg",
+						"type": "text"
+					}
+				],
+				"url": {
+					"raw": "https://127.0.0.1:8000/users/",
+					"protocol": "https",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"users",
+						""
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "https://127.0.0.1:8000/users/add",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Authorization",
+						"value": "bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJlbHRvbiIsInNjb3BlcyI6WyJtZW1iZXIiXSwiaXNfYWN0aXZlIjoxLCJleHAiOjE3MDM2MzkxNzZ9.05MCUEhHYZyhdSchUm-wVW-tXodsJ-bfNDz3IRliCV4",
+						"type": "text",
+						"disabled": true
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"username\": \"memo\",\n  \"password\": \"memo\",\n  \"first_name\": \"Memo\",\n  \"last_name\": \"Gonzalez\",\n  \"is_active\": true,\n  \"date_joined\": \"2023-12-26T15:18:39.390Z\",\n  \"last_login\": \"2023-12-26T15:18:39.390Z\",\n  \"pic\": \"string\",\n  \"scope\": [{\"name\": \"member\"}]\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "https://127.0.0.1:8000/users/add",
+					"protocol": "https",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"users",
+						"add"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "https://127.0.0.1:8000/users/token?username=memo&password=memo",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Authorization",
+						"value": "bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJlbHRvbiIsInNjb3BlcyI6WyJtZW1iZXIiXSwiaXNfYWN0aXZlIjoxLCJleHAiOjE3MDM2MzkxNzZ9.05MCUEhHYZyhdSchUm-wVW-tXodsJ-bfNDz3IRliCV4",
+						"type": "text"
+					}
+				],
+				"url": {
+					"raw": "https://127.0.0.1:8000/users/token?username=memo&password=memo",
+					"protocol": "https",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"users",
+						"token"
+					],
+					"query": [
+						{
+							"key": "username",
+							"value": "memo"
+						},
+						{
+							"key": "password",
+							"value": "memo"
+						}
+					]
+				}
+			},
+			"response": []
+		}
+	]
+}
