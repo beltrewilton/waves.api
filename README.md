@@ -9,7 +9,7 @@ activate waves_env
 
 git clone https://github.com/beltrewilton/waves.api.git
 
-cd waves
+cd waves.api
 
 pip install -r requirements.txt
 
