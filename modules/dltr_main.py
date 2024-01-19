@@ -201,6 +201,8 @@ async def get_audio(url: str, db: Session = Depends(get_db)):
         #TODO: hacer merge de todo los audios generados.
         #TODO: nice2have sacar la musica y mergear al final.
         #TODO: integrar a base de datos (detalle coming soon)
+
+        # ---- HEAVY AREA ----
         #TODO: entender styletts train
         #TODO: entender espeak
         #TODO: profundizar phonemes, posible consulta del libro speech
