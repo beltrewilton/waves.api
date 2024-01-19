@@ -2,6 +2,8 @@ from fastapi import APIRouter
 
 import sys
 import os
+import numpy as np
+import scipy.signal as signal
 from datetime import timedelta, datetime
 from fastapi import APIRouter, Depends, HTTPException, Security, status, Header
 from sqlalchemy.orm import Session
@@ -34,26 +36,28 @@ query = Query(path)
 output_path = "audios"
 
 
-def mp3_to_wav(input_mp4, output_wav):
+def mp4_to_wav(input_mp4, output_wav):
     import subprocess
     import os
+    from scipy.io import wavfile
+
 
     # Check if the input file exists
     if not os.path.exists(input_mp4):
         print(f"Error: Input file '{input_mp4}' not found.")
         return
 
-    command = [
-        'ffmpeg',
-        '-y',
-        '-i', input_mp4,
-        '-ss', '00:00:00',
-        '-to', '00:00:09',
-        '-acodec', 'pcm_s16le',
-        '-ar', '16000',
-        '-ac', '1',
-        output_wav
-    ]
+    # command = [
+    #     'ffmpeg',
+    #     '-y',
+    #     '-i', input_mp4,
+    #     '-ss', '00:00:00',
+    #     '-to', '00:00:09',
+    #     '-acodec', 'pcm_s16le',
+    #     '-ar', '16000',
+    #     '-ac', '1',
+    #     output_wav
+    # ]
 
     command_cut = [
         'ffmpeg',
@@ -62,26 +66,36 @@ def mp3_to_wav(input_mp4, output_wav):
         '-ss', '00:00:00',
         '-to', '00:00:09',
         '-acodec', 'pcm_s16le',
-        output_wav.replace(".wav", "_PART_.wav")
+        output_wav
     ]
 
     try:
-        subprocess.run(command, check=True)
+        # subprocess.run(command, check=True)
         subprocess.run(command_cut, check=True)
         print(f"Conversion successful: {input_mp4} -> {output_wav}")
+        sr, data = wavfile.read(output_wav)
+        return sr, data
+
     except subprocess.CalledProcessError as e:
         print(f"Error during conversion: {e}")
 
 
-def read_wav(path: str): # sr, data
-    from scipy.io import wavfile
-
-    sr, data = wavfile.read(path)
-
-    return sr, data
+def stereo_to_mono(data):
+    """Convert stereo audio to mono by averaging the samples"""
+    mono_audio = np.mean(data, axis=1, dtype=data.dtype)
+    return mono_audio
 
 
-def tr_audio(audio_reps): # numpy data
+def resample(data, orig_sr, target_sr):
+    """resample down/up a data audio"""
+    ratio = orig_sr / target_sr
+    nums = int(len(data) / ratio)
+    if len(data.shape) > 1:
+        data = stereo_to_mono(data)
+    sampled = signal.resample(data, nums)
+    return sampled
+
+def tr_audio(sr, audio_reps): # numpy data
     import wave
     import numpy as np
     import torch
@@ -98,6 +112,8 @@ def tr_audio(audio_reps): # numpy data
     model = WhisperForConditionalGeneration.from_pretrained(model_name_hf).to(device)
     # timestamp use.
     # forced_decoder_ids = processor.get_decoder_prompt_ids(language="en", task="transcribe")
+
+    audio_reps = resample(audio_reps, sr, 16_000)
 
     # features and generate token ids
     input_features = processor(audio_reps, sampling_rate=16_000, return_tensors="pt").input_features.to(device)
@@ -138,16 +154,15 @@ def dl_audio(url: str):
     return static_url, pathfile, audio.duration_seconds, audio.frame_rate, audio.channels
 
 
-def tmp_func_audio_already_synth(pathfile):
+def get_audio_info(pathfile):
     from pydub import AudioSegment
 
-    # pathfile = pathfile.replace('.mp4', '_PART__synth_embedding_scale_1.wav')
     audio = AudioSegment.from_file(pathfile, format="wav")
-
-    return  pathfile, audio.duration_seconds, audio.frame_rate, audio.channels
+    return pathfile, audio.duration_seconds, audio.frame_rate, audio.channels
 
 
 def synth_req(part: str, text: str, alpha: float = 0.3, beta: float = 0.2) -> dict:
+    part = part.replace('audios/', '')
     data = {
         "part": part,
         "text": text,
@@ -165,26 +180,21 @@ def synth_req(part: str, text: str, alpha: float = 0.3, beta: float = 0.2) -> di
 async def get_audio(url: str, db: Session = Depends(get_db)):
     try:
         static_url, mp4_file, duration_seconds, frame_rate, channels = dl_audio(url) # dl & calc el wav nativo
-        output_wav = mp4_file.replace(".mp4", ".wav")
-        mp3_to_wav(input_mp4=mp4_file, output_wav=output_wav) # out: .wav & _PART_.wav
-        sr, audio_resp = read_wav(output_wav)
-        transcript = tr_audio(audio_resp)
+        output_wav = mp4_file.replace(".mp4", ".wav").replace(".wav", "_PART_.wav")
+        sr, audio_resp = mp4_to_wav(input_mp4=mp4_file, output_wav=output_wav)
+        transcript = tr_audio(sr, audio_resp)
         print(transcript)
 
-        part = f"{mp4_file[7:-4]}_PART_.wav"
+        # part = f"{mp4_file[7:-4]}_PART_.wav"
         # text = "The check in this very curious act, I got a headache In all the territory of Greenland there are only four traffic lights In the whole island, a man offered us even a few fock guards As a souvenir, they also have fock guards, bear guards A very peculiar light trade"
-        r = synth_req(part, transcript[0])
+        r = synth_req(output_wav, transcript[0])
 
         synth_wav_file = r['synth_wav_file']
-        static_url_syth = f"https://127.0.0.1:8000/audios/{r['synth_name']}"
-        xpathfile, xduration_seconds, xframe_rate, xchannels = tmp_func_audio_already_synth(synth_wav_file) # calcula el wav synth
-        #TODO: lei foro
-        #TODO: organizar variables, funciones y objetos en momoria
-        #TODO: downsampling audio para whisper para no guardar ese wav
+        synth_static_url = f"https://127.0.0.1:8000/audios/{r['synth_name']}"
+        synth_pathfile, synth_duration_seconds, synth_frame_rate, synth_channels = get_audio_info(synth_wav_file)
+
         #TODO: hacer componente para mostrar lang original y lang synthetico
         #TODO: entender styletts inference
-        #TODO: preparar waves.styletts como servicio al que le envio un audioreferencia + transcript y
-        #      me retorna un audio synthetizado con voz referenciada (cloned)
         #TODO: (algoritmo) usar transcript con timestamp con uteraciones de 15-25 segundos en promedio:
         #TODO: (algoritmo) por cada uteracion par [audio+transcript] aplicarle un par [refembedding+clone]
         #TODO: identificar silencios largas (>1s); agregar 'audio silencio'
@@ -207,11 +217,11 @@ async def get_audio(url: str, db: Session = Depends(get_db)):
                 'channels': channels,
             },
             'synth': {
-                'static_url': static_url_syth,
-                'pathfile': xpathfile,
-                'duration_seconds': xduration_seconds,
-                'frame_rate': xframe_rate,
-                'channels': xchannels,
+                'static_url': synth_static_url,
+                'pathfile': synth_pathfile,
+                'duration_seconds': synth_duration_seconds,
+                'frame_rate': synth_frame_rate,
+                'channels': synth_channels,
             }
         }
     except Exception as ex:
@@ -223,8 +233,9 @@ if __name__ == "__main__":
 
     alphas = [0.0,  0.2,  0.4,  0.6,  0.8,  1]
     betas = [0.0,  0.2,  0.4,  0.6,  0.8,  1]
-    ref = "lN_dkoxbAlw_PART_.wav"
-    transcript = "48 hours in the state of Santa Catarina I'm going now for an adventure where I will show you how incredible is the state of Santa Catarina"
+    # ref = "lN_dkoxbAlw_PART_.wav"
+    ref = "8J7x3I7x2YM_PART_.wav"
+    transcript = "And check this curious fact, it blew my mind In all the territory of Greenland there are only 4 traffic lights."
 
     for j, k in list(itertools.combinations(range(len(alphas)), r=2)):
         print(alphas[j], betas[k])
