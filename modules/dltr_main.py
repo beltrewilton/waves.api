@@ -1,47 +1,55 @@
-from fastapi import APIRouter
-
-import sys
-import os
-import numpy as np
-import scipy.signal as signal
-from datetime import timedelta, datetime
-from fastapi import APIRouter, Depends, HTTPException, Security, status, Header
-from sqlalchemy.orm import Session
-import requests
+import subprocess
 import json
-from typing import Optional
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import librosa
+import numpy as np
+import requests
+import scipy.signal as signal
+import stable_whisper
+import torch
+import whisperx
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydub import AudioSegment
+from pytube import YouTube
+from sqlalchemy.orm import Session
+from transformers import (
+    WhisperProcessor, WhisperForConditionalGeneration, pipeline
+)
+
 from dbms.database import get_db
-import query.user_query as user_query
-import schemas.users as schemas
-import modules.user_models as models
-from query.user_query import Token
-from query.user_query import create_access_token, logout_token
-from query.user_query import ACCESS_TOKEN_EXPIRE_MINUTES, ACCESS_TOKEN_EXPIRE_SECONDS
-from query.user_query import validate_permissions
-from dbms.Query import Query
+from modules.combine import combine_chunks
+from modules.demucs_impl import demucs_it
+from modules.silero_based_chunk import chunk, split_audio
+
 
 router = APIRouter(prefix='/dltr', tags=['dltr'])
 
 gettrace = getattr(sys, 'gettrace', None)
 # is debug mode :-) ?
-if gettrace():
-    path = os.getcwd() + '/dbms/query.sql'
-    print('Debugging :-* ')
-else:
-    path = os.getcwd() + '/dbms/query.sql'
-    print('Run normally.')
+# if gettrace():
+#     path = os.getcwd() + '/dbms/query.sql'
+#     print('Debugging :-* ')
+# else:
+#     path = os.getcwd() + '/dbms/query.sql'
+#     print('Run normally.')
+#
+# query = Query(path)
 
-query = Query(path)
 
 output_path = "audios"
+device = "cuda:0" if torch.cuda.is_available() else "mps"
+model_name_hf = "openai/whisper-large-v3"
+
+model = WhisperForConditionalGeneration.from_pretrained(model_name_hf).to(device)
+processor = WhisperProcessor.from_pretrained(model_name_hf)
 
 
 def mp4_to_wav(input_mp4, output_wav):
-    import subprocess
-    import os
-    from scipy.io import wavfile
-
-
     # Check if the input file exists
     if not os.path.exists(input_mp4):
         print(f"Error: Input file '{input_mp4}' not found.")
@@ -59,23 +67,23 @@ def mp4_to_wav(input_mp4, output_wav):
     #     output_wav
     # ]
 
-    command_cut = [
+    command = [
         'ffmpeg',
         '-y',
         '-i', input_mp4,
-        '-ss', '00:00:00',
-        '-to', '00:00:09',
+        # '-ss', '00:01:28',
+        # '-to', '00:05:57',
         '-acodec', 'pcm_s16le',
+        '-hide_banner',
+        '-loglevel', 'error',
         output_wav
     ]
 
     try:
-        # subprocess.run(command, check=True)
-        subprocess.run(command_cut, check=True)
-        print(f"Conversion successful: {input_mp4} -> {output_wav}")
-        sr, data = wavfile.read(output_wav)
-        return sr, data
-
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"Error ffmpeg encontrado durante ejecucion, {result.stderr}")
+        print(f"Conversion successful: {input_mp4} -> {output_wav},\n{result.stderr} {result.stdout}")
     except subprocess.CalledProcessError as e:
         print(f"Error during conversion: {e}")
 
@@ -92,53 +100,74 @@ def resample(data, orig_sr, target_sr):
     nums = int(len(data) / ratio)
     if len(data.shape) > 1:
         data = stereo_to_mono(data)
+    # data = zscore(data)
     sampled = signal.resample(data, nums)
     return sampled
 
-def tr_audio(sr, audio_reps): # numpy data
-    import wave
-    import numpy as np
-    import torch
-    from datasets import load_dataset, Audio
-    from transformers import (
-        WhisperProcessor, WhisperForConditionalGeneration, pipeline, VitsModel, AutoTokenizer
-    )
 
+def tr_audio_st(sr, audio_reps):
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    # model = stable_whisper.load_faster_whisper("large-v3", device=device, compute_type="auto", num_workers=5,)
+    model = stable_whisper.load_faster_whisper("large-v3", device=device,)
+    result = model.transcribe(audio=audio_reps,)
+    # result = model.transcribe(audio=audio_reps, beam_size=20, language='es', temperature=0, task='transcribe',
+    #                                  word_timestamps=True, condition_on_previous_text=False, no_speech_threshold=0.1)
+
+    return result
+
+
+def tr_audio_pipe(sr, audio_reps):
     device = "cuda:0" if torch.cuda.is_available() else "mps"
 
     model_name_hf = "openai/whisper-large-v3"
 
-    processor = WhisperProcessor.from_pretrained(model_name_hf)
-    model = WhisperForConditionalGeneration.from_pretrained(model_name_hf).to(device)
-    # timestamp use.
-    # forced_decoder_ids = processor.get_decoder_prompt_ids(language="en", task="transcribe")
-
     audio_reps = resample(audio_reps, sr, 16_000)
 
+    # tokenizer = WhisperTokenizer.from_pretrained(model_name_hf, language="es", task="transcribe", verbose=True, beam_size=10)
+
+    pipe = pipeline("automatic-speech-recognition", model=model_name_hf, device=device,)
+    r = pipe(audio_reps, return_timestamps=True, chunk_length_s=30, stride_length_s=[4, 2], batch_size=8, generate_kwargs = {"language":"<|es|>","task": "transcribe"})
+    return r
+
+
+def tr_audio_x(sr, audio_reps):
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    audio_reps = resample(audio_reps, sr, 16_000)
+    model = whisperx.load_model("large-v3", device, compute_type='float32')
+    result = model.transcribe(audio_reps, batch_size=8)
+
+    return result
+
+
+def tr_audio(sr, audio_reps, resample_=True): # numpy data
+    if resample_:
+        audio_reps = resample(audio_reps, sr, 16_000)
+
     # features and generate token ids
-    input_features = processor(audio_reps, sampling_rate=16_000, return_tensors="pt").input_features.to(device)
+    input_features = processor.feature_extractor(audio_reps, sampling_rate=16_000, return_tensors="pt").input_features.to(device)
+    # timestamp use.
+    # forced_decoder_ids = processor.get_decoder_prompt_ids(language="Spanish", task="transcribe")
     # predicted_ids = model.generate(input_features, forced_decoder_ids=forced_decoder_ids, return_timestamps=True,)
-    predicted_ids = model.generate(input_features, return_timestamps=True, task="translate")
+    # predicted_ids = model.generate(input_features, language="<|es|>",  task="transcribe", return_timestamps=True)
+    predicted_ids = model.generate(input_features, language="<|es|>",  task="translate",)
 
     # decode
     transcription = processor.batch_decode(predicted_ids, skip_special_tokens=True)
+    # transcription = processor.tokenizer.decode(predicted_ids[0].cpu().numpy(), output_offsets=True)
     return transcription
 
 
 def dl_audio(url: str):
-    from pydub import AudioSegment
-    import base64
-    from pytube import YouTube
-    import os
-
     os.makedirs(output_path, exist_ok=True)
     ytb_key, pathfile = "", ""
     if "?" in url:
         ytb_key = url.split("?")[1]
-        pathfile = f"{output_path}/{ytb_key[2:]}.mp4"
+        os.makedirs(f"{output_path}/{ytb_key}", exist_ok=True)
+        pathfile = f"{output_path}/{ytb_key}/{ytb_key[2:]}.mp4"
     else:
         ytb_key = url.split("shorts/")[1]
-        pathfile = f"{output_path}/{ytb_key}.mp4"
+        os.makedirs(f"{output_path}/{ytb_key}", exist_ok=True)
+        pathfile = f"{output_path}/{ytb_key}/{ytb_key}.mp4"
 
     if not os.path.exists(pathfile):
         yt = YouTube(url)
@@ -155,16 +184,13 @@ def dl_audio(url: str):
 
 
 def get_audio_info(pathfile):
-    from pydub import AudioSegment
-
     audio = AudioSegment.from_file(pathfile, format="wav")
     return pathfile, audio.duration_seconds, audio.frame_rate, audio.channels
 
 
-def synth_req(part: str, text: str, alpha: float = 0.3, beta: float = 0.2) -> dict:
-    part = part.replace('audios/', '')
+def synth_req(audio_path: str, text: str, alpha: float = 0.3, beta: float = 0.2) -> dict:
     data = {
-        "part": part,
+        "audio_path": audio_path,
         "text": text,
         "alpha":  alpha,
         "beta":  beta,
@@ -176,23 +202,44 @@ def synth_req(part: str, text: str, alpha: float = 0.3, beta: float = 0.2) -> di
     return r.json()
 
 
+def synth_chunks(audio_path: Path):
+    key = audio_path.parent.name
+    vocals = audio_path.parent
+    for v in sorted(vocals.rglob("vocals_*.wav")):
+        print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
+        print(v)
+        print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
+        data, sr = librosa.load(v, sr=16_000, mono=True)  # HACE NORMALIZACION
+        transcript = tr_audio(sr, data, resample_=False)
+        print(transcript)
+        r = synth_req(audio_path=v.absolute().__str__(), text=transcript[0])
+        print(r)
+
+
 @router.get("/",)
 async def get_audio(url: str, db: Session = Depends(get_db)):
+    start_time = time.time()
     try:
         static_url, mp4_file, duration_seconds, frame_rate, channels = dl_audio(url) # dl & calc el wav nativo
-        output_wav = mp4_file.replace(".mp4", ".wav").replace(".wav", "_PART_.wav")
-        sr, audio_resp = mp4_to_wav(input_mp4=mp4_file, output_wav=output_wav)
-        transcript = tr_audio(sr, audio_resp)
-        print(transcript)
+        output_wav = mp4_file.replace(".mp4", ".wav")
+        mp4_to_wav(input_mp4=mp4_file, output_wav=output_wav)
+        audio_path = Path(output_wav)
 
-        # part = f"{mp4_file[7:-4]}_PART_.wav"
-        # text = "The check in this very curious act, I got a headache In all the territory of Greenland there are only four traffic lights In the whole island, a man offered us even a few fock guards As a souvenir, they also have fock guards, bear guards A very peculiar light trade"
-        r = synth_req(output_wav, transcript[0])
+        demucs_it(audio_path.absolute().__str__())
+        vocals = f"{audio_path.parent.absolute().__str__()}/vocals.wav"
 
-        synth_wav_file = r['synth_wav_file']
-        synth_static_url = f"https://127.0.0.1:8000/audios/{r['synth_name']}"
+        cuts = chunk(vocals)
+        split_audio(cuts, vocals)
+        synth_chunks(audio_path)
+        combine_chunks(audio_path)
+
+        synth_wav_file = f"{audio_path.parent.absolute().__str__()}/final_sound.wav"
+        key = audio_path.parent.name
+        synth_static_url = f"https://127.0.0.1:8000/audios/{key}/final_sound.wav"
         synth_pathfile, synth_duration_seconds, synth_frame_rate, synth_channels = get_audio_info(synth_wav_file)
 
+        # PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 python -m demucs.separate -n htdemucs audios/_K_BlmXSlrw_PART_.wav  --two-stems=vocals -d mps
+        #
         #TODO: hacer componente para mostrar lang original y lang synthetico
         #TODO: entender styletts inference
         #TODO: (algoritmo) usar transcript con timestamp con uteraciones de 15-25 segundos en promedio:
@@ -209,6 +256,8 @@ async def get_audio(url: str, db: Session = Depends(get_db)):
         #TODO: deep lecturac en foros ....
         #TODO: entender el mel spectrogram
         #TODO: conocer mas sobre Fundamental frequency (F0)
+
+        print("--- %s seconds ---" % (time.time() - start_time))
 
         return {
             'native': {
@@ -231,15 +280,39 @@ async def get_audio(url: str, db: Session = Depends(get_db)):
 
 
 if __name__ == "__main__":
-    import itertools
+    start_time = time.time()
 
-    alphas = [0.0,  0.2,  0.4,  0.6,  0.8,  1]
-    betas = [0.0,  0.2,  0.4,  0.6,  0.8,  1]
-    # ref = "lN_dkoxbAlw_PART_.wav"
-    ref = "8J7x3I7x2YM_PART_.wav"
-    transcript = "And check this curious fact, it blew my mind In all the territory of Greenland there are only 4 traffic lights."
+    key = "q3-2U2YxlWk_PART_"
+    # key = "JJy_AgTXwZ0_PART_"
+    vocals = Path(f'../separated/htdemucs/{key}')
+    for v in sorted(vocals.rglob("vocals_*.wav")):
+        # sr, data = wavfile.read(v)
+        print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
+        print(v)
+        print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
+        data, sr = librosa.load(v, sr=16_000, mono=True) # HACE NORMALIZACION
+        transcript = tr_audio(sr, data, resample_=False)
+        print(transcript)
+        r = synth_req(audio_path=v.absolute().__str__(), text=transcript[0])
+        print(r)
 
-    for j, k in list(itertools.combinations(range(len(alphas)), r=2)):
-        print(alphas[j], betas[k])
-        r = synth_req(ref, transcript, alpha=alphas[j], beta=betas[k])
-        print(r['synth_name'], r['response'])
+    print("--- %s seconds ---" % (time.time() - start_time))
+
+
+
+    # key = "JJy_AgTXwZ0_PART_"
+    # data, sr = librosa.load(f'../separated/htdemucs/{key}/vocals_2.wav', sr=16_000, mono=True)  # HACE NORMALIZACION
+    # transcript = tr_audio(sr, data, resample_=False)
+    #
+    # import itertools
+    #
+    # alphas = [0.0,  0.2,  0.4,  0.6,  0.8,  1]
+    # betas = [0.0,  0.2,  0.4,  0.6,  0.8,  1]
+    # # ref = "lN_dkoxbAlw_PART_.wav"
+    # ref = "vocals_2.wav"
+    # # transcript = "And check this curious fact, it blew my mind In all the territory of Greenland there are only 4 traffic lights."
+    #
+    # for j, k in list(itertools.combinations(range(len(alphas)), r=2)):
+    #     print(alphas[j], betas[k])
+    #     r = synth_req(ref, key, transcript[0], alpha=alphas[j], beta=betas[k])
+    #     print(r['synth_name'], r['response'])
