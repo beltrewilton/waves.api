@@ -223,8 +223,12 @@ def synth_chunks(trs: dict):
         print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
         print(f'synthetize {i[1]["path"]}')
         print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
-        r = synth_req(text=i[1]['path'], audio_path=i[1]['transcript'])
+        r = synth_req(audio_path=i[1]['path'], text=i[1]['transcript'])
         print(r)
+
+
+def mask_seq():
+    pass
 
 
 @router.get("/",)
