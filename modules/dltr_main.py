@@ -162,6 +162,7 @@ def dl_audio(url: str):
     ytb_key, pathfile = "", ""
     if "?" in url:
         ytb_key = url.split("?")[1]
+        ytb_key = ytb_key.replace("v=", "") if "v=" in ytb_key else ytb_key
         os.makedirs(f"{output_path}/{ytb_key}", exist_ok=True)
         pathfile = f"{output_path}/{ytb_key}/{ytb_key[2:]}.mp4"
     else:
@@ -202,17 +203,27 @@ def synth_req(audio_path: str, text: str, alpha: float = 0.3, beta: float = 0.2)
     return r.json()
 
 
-def synth_chunks(audio_path: Path):
+def tr_chunks(audio_path: Path, cuts: dict) -> dict:
     key = audio_path.parent.name
     vocals = audio_path.parent
-    for v in sorted(vocals.rglob("vocals_*.wav")):
+    trs = cuts.copy()
+    for i, v in enumerate(sorted(vocals.rglob("vocals_*.wav"))):
         print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
-        print(v)
+        print(f"translate {v}")
         print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
         data, sr = librosa.load(v, sr=16_000, mono=True)  # HACE NORMALIZACION
         transcript = tr_audio(sr, data, resample_=False)
-        print(transcript)
-        r = synth_req(audio_path=v.absolute().__str__(), text=transcript[0])
+        trs[i]['path'] = v.absolute().__str__()
+        trs[i]['transcript'] = transcript[0]
+    return trs
+
+
+def synth_chunks(trs: dict):
+    for i in trs.items():
+        print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
+        print(f'synthetize {i[1]["path"]}')
+        print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
+        r = synth_req(text=i[1]['path'], audio_path=i[1]['transcript'])
         print(r)
 
 
@@ -230,7 +241,8 @@ async def get_audio(url: str, db: Session = Depends(get_db)):
 
         cuts = chunk(vocals)
         split_audio(cuts, vocals)
-        synth_chunks(audio_path)
+        trs = tr_chunks(audio_path, cuts)
+        synth_chunks(trs)
         combine_chunks(audio_path)
 
         synth_wav_file = f"{audio_path.parent.absolute().__str__()}/final_sound.wav"
