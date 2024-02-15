@@ -5,6 +5,10 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+import re
+import math
+import itertools
+
 
 import librosa
 import numpy as np
@@ -45,8 +49,10 @@ output_path = "audios"
 device = "cuda:0" if torch.cuda.is_available() else "mps"
 model_name_hf = "openai/whisper-large-v3"
 
-model = WhisperForConditionalGeneration.from_pretrained(model_name_hf).to(device)
-processor = WhisperProcessor.from_pretrained(model_name_hf)
+# model = WhisperForConditionalGeneration.from_pretrained(model_name_hf).to(device)
+# processor = WhisperProcessor.from_pretrained(model_name_hf)
+
+pipe = pipeline("automatic-speech-recognition", model=model_name_hf, device=device,)
 
 
 def mp4_to_wav(input_mp4, output_wav):
@@ -116,18 +122,13 @@ def tr_audio_st(sr, audio_reps):
     return result
 
 
-def tr_audio_pipe(sr, audio_reps):
-    device = "cuda:0" if torch.cuda.is_available() else "mps"
+def tr_audio_pipe(sr, audio_reps, resample_=False):
+    if resample_:
+        audio_reps = resample(audio_reps, sr, 16_000)
 
-    model_name_hf = "openai/whisper-large-v3"
-
-    audio_reps = resample(audio_reps, sr, 16_000)
-
-    # tokenizer = WhisperTokenizer.from_pretrained(model_name_hf, language="es", task="transcribe", verbose=True, beam_size=10)
-
-    pipe = pipeline("automatic-speech-recognition", model=model_name_hf, device=device,)
-    r = pipe(audio_reps, return_timestamps=True, chunk_length_s=30, stride_length_s=[4, 2], batch_size=8, generate_kwargs = {"language":"<|es|>","task": "transcribe"})
-    return r
+    r = pipe(audio_reps, return_timestamps=True, chunk_length_s=30, stride_length_s=[4, 2], batch_size=8,
+             generate_kwargs = {"language":"<|es|>","task": "translate"})
+    return r['text']
 
 
 def tr_audio_x(sr, audio_reps):
@@ -176,6 +177,10 @@ def dl_audio(url: str):
         out_file = video.download(output_path=output_path)
         os.rename(out_file, pathfile)
 
+        video = yt.streams.filter(only_audio=False).first()
+        video_file = video.download(output_path=output_path)
+        os.rename(video_file, pathfile.replace(".mp4", "_V.mp4"))
+
     audio = AudioSegment.from_file(pathfile, format="mp4")
     # audio_base64 = base64.b64encode(audio.export(format="wav").read())
     # return audio_base64.decode("utf-8")
@@ -189,12 +194,13 @@ def get_audio_info(pathfile):
     return pathfile, audio.duration_seconds, audio.frame_rate, audio.channels
 
 
-def synth_req(audio_path: str, text: str, alpha: float = 0.3, beta: float = 0.2) -> dict:
+def synth_req(audio_path: str, text: str, alpha: float = 0.3, beta: float = 0.2, use_vc = True) -> dict:
     data = {
         "audio_path": audio_path,
         "text": text,
         "alpha":  alpha,
         "beta":  beta,
+        "use_vc": use_vc,
     }
     url = "https://127.0.0.1:8060/tts/synth"
     public_pem = os.getcwd() + '/certs/public.crt'
@@ -212,9 +218,12 @@ def tr_chunks(audio_path: Path, cuts: dict) -> dict:
         print(f"translate {v}")
         print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
         data, sr = librosa.load(v, sr=16_000, mono=True)  # HACE NORMALIZACION
-        transcript = tr_audio(sr, data, resample_=False)
+        # transcript = tr_audio(sr, data, resample_=False)
+        start_time = time.time()
+        transcript = tr_audio_pipe(sr, data)
+        print("--- %s seconds ---" % (time.time() - start_time))
         trs[i]['path'] = v.absolute().__str__()
-        trs[i]['transcript'] = transcript[0]
+        trs[i]['transcript'] = transcript
     return trs
 
 
@@ -226,9 +235,72 @@ def synth_chunks(trs: dict):
         r = synth_req(audio_path=i[1]['path'], text=i[1]['transcript'])
         print(r)
 
+#TODO: pendiente impl este dolor!!
+# mask [{'start', 1.87, 'end': 4.67}, {'start', 15.00, 'end': 18.97}]
+def mask_seq(cuts: dict, mask: dict):
+    cutlist = [item[1] for item in cuts.items()]
+    cutlist.insert(0, {})
+    for j, item in enumerate(cutlist):
+        # if item['start']
+        pass
+    cuts = {j: item for j, item in enumerate(cutlist)}
+    return cuts
 
-def mask_seq():
-    pass
+
+def len_ctrl(trs: dict) -> dict:
+    #TODO pasaste de los x segundos?, pues:
+    # buscar el punto mas cerca de la mitad y dividir el texto
+    # si no hay punto, la coma
+    # contar la cantidad de palabras en ambas mitades:
+    # cortar el audio de acuerdo a la proporcion del conteo de palabras en el tiempo total del audio.
+    # ya que el trs fue translated en su unidad, no pierde contexto, HAY QUE MOVER EL silence TAMBIEN
+    # TODO usar lista de dict para usar insert con posiciones fijas.
+    trs_copy = trs.copy()
+    threshold = 29.0
+    for i in range(len(trs_copy)):
+        if trs_copy[i]['length'] >= threshold:
+            transcript = trs_copy[i]['transcript'].strip()
+            s = re.split('\s', transcript.strip())
+            n = math.floor(len(s) / 2)
+            text_1 = " ".join(s[:n])
+            text_2 = " ".join(s[n:])
+            br = trs_copy[i]['length'] * .50 # also part_1_length
+            part_1_start = 0 # trs_copy[i]['start']
+            part_1_end = part_1_start + br
+            part_1_silence = trs_copy[i]['silence']
+
+            part_2_silence = 0.050
+            part_2_start = part_1_end + part_2_silence
+            part_2_end = trs_copy[i]['end']
+            part_2_path = f"{Path(trs_copy[i]['path']).parent}/vocals_{i + 1}.wav"
+
+            p1 = {'start': part_1_start, 'end': part_1_end, 'length': br, 'silence': part_1_silence, 'cut': True,
+                  'path': trs_copy[i]['path'],
+                  'transcript': f"{text_1}."}
+
+            p2 = {'start': part_2_start, 'end': part_2_end, 'length': (part_2_end - part_2_start), 'silence': part_2_silence, 'cut': True,
+                  'path': part_2_path,
+                  'transcript': text_2}
+
+            parent = Path(trs_copy[i]['path']).parent
+
+            trslist = [item[1] for item in trs.items()]
+            trslist[i] = p1
+            trslist.insert(i + 1, p2)
+            for j, item in enumerate(trslist):
+                item['path'] = f"{parent}/vocals_{j}.wav"
+            trs = {j: item for j, item in enumerate(trslist)}
+
+            for file in itertools.chain(
+                    parent.rglob("vocals_*.wav"),
+                    parent.rglob("vocals-silence*.wav"),
+            ):
+                file.unlink(missing_ok=True)
+
+            vocals = f"{parent}/vocals.wav"
+            split_audio(trs, vocals)
+
+    return trs
 
 
 @router.get("/",)
@@ -246,6 +318,7 @@ async def get_audio(url: str, db: Session = Depends(get_db)):
         cuts = chunk(vocals)
         split_audio(cuts, vocals)
         trs = tr_chunks(audio_path, cuts)
+        trs = len_ctrl(trs)
         synth_chunks(trs)
         combine_chunks(audio_path)
 

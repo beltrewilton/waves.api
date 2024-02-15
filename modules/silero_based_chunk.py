@@ -12,7 +12,7 @@ model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
                               onnx=USE_ONNX)
 
 
-def chunk(wav_vocals: str, CUT_NEAR: int = 10, SAMPLING_RATE: int = 16_000, silence_threshold: float = 0.100) -> dict:
+def chunk(wav_vocals: str, CUT_NEAR: int = 7, SAMPLING_RATE: int = 16_000, silence_threshold: float = 0.0001) -> dict:
     (get_speech_timestamps,
      save_audio,
      read_audio,
@@ -53,6 +53,7 @@ def chunk(wav_vocals: str, CUT_NEAR: int = 10, SAMPLING_RATE: int = 16_000, sile
     #  'speech_dict')
     speech_timestamps = get_speech_timestamps(wav, model,
                                               sampling_rate=SAMPLING_RATE,
+                                              min_silence_duration_ms=1
                                               # max_speech_duration_s=3, # fuerza bruta.! no resulta :(
                                               # return_seconds=True, # hace redondeo no adecuado
                                               )
@@ -72,11 +73,12 @@ def chunk(wav_vocals: str, CUT_NEAR: int = 10, SAMPLING_RATE: int = 16_000, sile
             jumps[i]['cut'] = True
 
     cuts = {}
-    cuts[0] = {'start': jumps[0]['start'], 'end': -1, 'length': -1, 'silence': jumps[0]['silence']}
+    cuts[0] = {'start': jumps[0]['start'], 'end': jumps[0]['end'], 'length': -1, 'silence': jumps[0]['silence'], 'cut': jumps[0]['cut']}
     idx = 0
     for i in range(1, len(jumps)):
-        if idx == 11:
-            print()
+        if jumps[0]['cut'] and i == 1:
+            cuts[idx]['length'] = cuts[idx]['end'] - cuts[idx]['start']
+            idx += 1
 
         if jumps[i]['cut'] and jumps[i - 1]['cut']:
             # q[idx - 1]['end'] = a[i - 1]['end']
